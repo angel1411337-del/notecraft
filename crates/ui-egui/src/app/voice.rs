@@ -3,9 +3,11 @@
 
 use super::*;
 use craft_voice_core::State;
+use craft_voice_core::models::{self, Engine, Model};
 use craft_voice_runtime::audio::PcmAudio;
-use craft_voice_runtime::{Cancellation, Runtime, RuntimeEvent, Transcriber, WhisperConfig};
+use craft_voice_runtime::{Cancellation, Runtime, RuntimeEvent, TranscribeConfig, Transcriber, WhisperConfig};
 use notecraft_engine::{InvocationOrigin, VoiceEffect, VoiceUpdate};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 
@@ -38,8 +40,14 @@ pub(super) struct VoiceUi {
     ticket_counter: u64,
     target: Option<InsertionTicket>,
     runtime: Option<Runtime>,
+    /// The model chosen in setup, from `craft_voice_core::models`.
+    choice: &'static Model,
+    /// whisper.cpp's program, `whisper-cli`.
     executable: String,
-    model: String,
+    /// transcribe.cpp's program, `transcribe-cli`.
+    transcribe_executable: String,
+    /// The model file chosen for each model in the list, by identifier.
+    model_files: HashMap<&'static str, String>,
     language: String,
     device: Option<String>,
     devices: Vec<String>,
@@ -80,13 +88,26 @@ struct MicTest {
 
 impl VoiceUi {
     pub fn new(settings: &notecraft_store::Settings) -> Self {
+        let model_files: HashMap<&'static str, String> = models::catalog()
+            .iter()
+            .filter_map(|m| settings.get(&model_setting(m)).filter(|path| !path.is_empty()).map(|path| (m.id, path)))
+            .collect();
+        // A setup from before the list (a whisper.cpp model only) keeps working as it was.
+        let fallback = if model_files.contains_key(models::WHISPER_CPP) { models::WHISPER_CPP } else { models::DEFAULT_MODEL };
+        let choice = settings
+            .get("voice_model_choice")
+            .and_then(|id| models::model(&id))
+            .or_else(|| models::model(fallback))
+            .unwrap_or(&models::WHISPER_CPP_MODEL);
         Self {
             editor_epoch: 0,
             ticket_counter: 0,
             target: None,
             runtime: None,
+            choice,
             executable: settings.get("voice_executable").unwrap_or_default(),
-            model: settings.get("voice_model").unwrap_or_default(),
+            transcribe_executable: settings.get("voice_transcribe_executable").unwrap_or_default(),
+            model_files,
             language: settings.get("voice_language").unwrap_or_else(|| "auto".into()),
             device: settings.get("voice_device").filter(|v| !v.is_empty()),
             devices: Vec::new(),
@@ -111,6 +132,62 @@ impl VoiceUi {
             recognizer_result: None,
         }
     }
+
+    /// The program the chosen model runs in.
+    fn program(&self) -> &str {
+        match self.choice.engine {
+            Engine::WhisperCpp => &self.executable,
+            Engine::TranscribeCpp => &self.transcribe_executable,
+        }
+    }
+
+    fn program_mut(&mut self) -> &mut String {
+        match self.choice.engine {
+            Engine::WhisperCpp => &mut self.executable,
+            Engine::TranscribeCpp => &mut self.transcribe_executable,
+        }
+    }
+
+    /// The file chosen for the chosen model.
+    fn model_file(&self) -> &str {
+        self.model_files.get(self.choice.id).map_or("", String::as_str)
+    }
+
+    fn model_file_mut(&mut self) -> &mut String {
+        self.model_files.entry(self.choice.id).or_default()
+    }
+
+    /// The recognizer for the chosen model, its program and file, and the language.
+    fn recognizer(&self, temporary_root: PathBuf) -> Box<dyn Transcriber> {
+        let (program, model) = (PathBuf::from(self.program()), PathBuf::from(self.model_file()));
+        match self.choice.engine {
+            Engine::WhisperCpp => {
+                let mut config = WhisperConfig::new(program, model, temporary_root);
+                config.language = self.language.clone();
+                Box::new(config)
+            }
+            Engine::TranscribeCpp => {
+                let mut config = TranscribeConfig::new(program, model, temporary_root);
+                config.language = self.language.clone();
+                Box::new(config)
+            }
+        }
+    }
+}
+
+/// The settings key for a model's file. whisper.cpp keeps the key dictation first used.
+fn model_setting(model: &Model) -> String {
+    if model.id == models::WHISPER_CPP { "voice_model".into() } else { format!("voice_model.{}", model.id) }
+}
+
+/// The name shown for a model in the list.
+fn model_name(model: &Model) -> &'static str {
+    if model.id == models::WHISPER_CPP { crate::tl_id!("voice.your_own_whisper_cpp_model_a7206edd") } else { model.name }
+}
+
+/// A download size for people: "480 MB", "1.6 GB".
+fn download_size(megabytes: u32) -> String {
+    if megabytes >= 1000 { format!("{:.1} GB", f64::from(megabytes) / 1000.0) } else { format!("{megabytes} MB") }
 }
 
 /// Where the dictated words go: at the caret, or as new paragraphs at the end of the page when
@@ -172,7 +249,7 @@ fn explain(message: &str) -> (String, Fix) {
     if m.contains("timed out") {
         return (crate::tl_id!("voice.recognition_took_too_long_a_smaller_model_such_as_fff73af3").into(), Fix::Setup);
     }
-    if any(&["whisper-cli", "does not advertise", "recognizer exited", "whisper model", "language code"]) {
+    if any(&["whisper-cli", "transcribe-cli", "gguf", "does not advertise", "recognizer exited", "whisper model", "language code"]) {
         return (crate::tl_id!("voice.the_speech_recognizer_isn_t_set_up_correctly_open_57ac2283").into(), Fix::Setup);
     }
     if m.contains("page view") {
@@ -645,9 +722,7 @@ impl NoteCraftApp {
                 self.voice.auto_tried = false;
                 let setup = (|| -> Result<Runtime, String> {
                     let root = voice_cache_root(&self.session)?;
-                    let mut config = WhisperConfig::new(self.voice.executable.clone().into(), self.voice.model.clone().into(), root);
-                    config.language = self.voice.language.clone();
-                    Runtime::start(session, Box::new(config), self.voice.device.clone())
+                    Runtime::start(session, self.voice.recognizer(root), self.voice.device.clone())
                 })();
                 match setup {
                     Ok(runtime) => self.voice.runtime = Some(runtime),
@@ -767,9 +842,12 @@ impl NoteCraftApp {
         self.voice.pending_stop = false;
     }
 
-    /// The program and model are chosen and exist, so recording can start.
+    /// The program and model file are chosen and exist, and the model transcribes the chosen
+    /// language, so recording can start.
     fn dictation_ready(&self) -> bool {
-        Path::new(&self.voice.executable).is_file() && Path::new(&self.voice.model).metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
+        Path::new(self.voice.program()).is_file()
+            && Path::new(self.voice.model_file()).metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
+            && self.voice.choice.speaks(&self.voice.language)
     }
 
     /// Starts dictating, or opens setup first when the recognizer is not chosen yet.
@@ -938,11 +1016,9 @@ impl NoteCraftApp {
         self.voice.recognizer_test = None;
         let started = (|| -> Result<Runtime, String> {
             let root = voice_cache_root(&self.session)?;
-            let mut config = WhisperConfig::new(self.voice.executable.clone().into(), self.voice.model.clone().into(), root);
-            config.language = self.voice.language.clone();
             // A second of silence: enough for the recognizer to load the model and answer.
             let silence = PcmAudio::new(vec![0; craft_voice_runtime::audio::SAMPLE_RATE])?;
-            Runtime::from_audio(RECOGNIZER_TEST, Box::new(config), silence)
+            Runtime::from_audio(RECOGNIZER_TEST, self.voice.recognizer(root), silence)
         })();
         match started {
             Ok(runtime) => self.voice.recognizer_test = Some(runtime),
@@ -999,9 +1075,12 @@ impl NoteCraftApp {
 
     fn save_voice_settings(&mut self) {
         let review = if self.voice.review_first { "true" } else { "false" };
+        let (model_key, model_file) = (model_setting(self.voice.choice), self.voice.model_file().to_string());
         for (key, value) in [
+            ("voice_model_choice", self.voice.choice.id),
             ("voice_executable", self.voice.executable.as_str()),
-            ("voice_model", self.voice.model.as_str()),
+            ("voice_transcribe_executable", self.voice.transcribe_executable.as_str()),
+            (model_key.as_str(), model_file.as_str()),
             ("voice_language", self.voice.language.as_str()),
             ("voice_device", self.voice.device.as_deref().unwrap_or("")),
             ("voice_shortcut", self.voice.shortcut.as_str()),
@@ -1365,8 +1444,14 @@ impl NoteCraftApp {
                     ui.label(egui::RichText::new(reason).strong().color(t.accent));
                     ui.add_space(4.0);
                 }
-                ui.label(crate::tl_id!("voice.dictation_runs_on_this_computer_with_whisper_cpp_c_fe751c46"));
-                ui.hyperlink_to(crate::tl_id!("voice.where_to_get_whisper_cli_and_a_model_3b6c0fcb"), WHISPER_HELP_URL);
+                let whisper = self.voice.choice.engine == Engine::WhisperCpp;
+                if whisper {
+                    ui.label(crate::tl_id!("voice.dictation_runs_on_this_computer_with_whisper_cpp_c_fe751c46"));
+                    ui.hyperlink_to(crate::tl_id!("voice.where_to_get_whisper_cli_and_a_model_3b6c0fcb"), WHISPER_HELP_URL);
+                } else {
+                    ui.label(crate::tl_id!("voice.dictation_runs_on_this_computer_with_transcribe_cp_92d97a34"));
+                    ui.hyperlink_to(crate::tl_id!("voice.where_to_get_transcribe_cli_fe6efb55"), Engine::TranscribeCpp.page());
+                }
                 ui.add_space(8.0);
                 ui.add_enabled_ui(!busy, |ui| {
                     let found = |ok: bool| {
@@ -1376,33 +1461,88 @@ impl NoteCraftApp {
                             egui::RichText::new(crate::tl_id!("voice.not_found_475c8486")).color(t.warn)
                         }
                     };
-                    let program = ui.label(egui::RichText::new(crate::tl_id!("voice.recognizer_program_whisper_cli_eb53d9da")).strong()).id;
+                    let note = |ui: &mut egui::Ui, words: String| {
+                        ui.add(egui::Label::new(egui::RichText::new(words).size(11.5).color(t.muted)).wrap());
+                    };
+                    let speech_model = ui.label(egui::RichText::new(crate::tl_id!("voice.speech_model_3c5f0bfe")).strong()).id;
+                    // Most accurate first, then the smaller Whisper models, then any whisper.cpp model.
+                    let group = |m: &Model| match (m.engine, m.leaderboard_wer) {
+                        (Engine::WhisperCpp, _) => 2,
+                        (_, Some(_)) => 0,
+                        (_, None) => 1,
+                    };
+                    let list =
+                        egui::ComboBox::from_id_salt("dictation-model").selected_text(model_name(self.voice.choice)).width(300.0).show_ui(ui, |ui| {
+                            let mut last = None;
+                            for m in models::catalog() {
+                                if last.is_some_and(|g| g != group(m)) {
+                                    ui.separator();
+                                }
+                                last = Some(group(m));
+                                changed |= ui.selectable_value(&mut self.voice.choice, m, model_name(m)).changed();
+                            }
+                        });
+                    list.response.labelled_by(speech_model);
+                    // The rows below follow the model chosen just now, not the one the frame began with.
+                    let choice = self.voice.choice;
+                    let whisper = choice.engine == Engine::WhisperCpp;
+                    if !whisper {
+                        note(
+                            ui,
+                            crate::i18n::format_message_id(
+                                "voice.by_maker_about_size_to_download_license_ad1bbd28",
+                                &[("maker", choice.maker), ("size", &download_size(choice.download_mb)), ("license", choice.license)],
+                            ),
+                        );
+                        note(ui, crate::i18n::format_message_id("voice.languages_count_c6a88eeb", &[("count", &choice.languages.len().to_string())]));
+                        if let Some(wer) = choice.leaderboard_wer {
+                            note(
+                                ui,
+                                crate::i18n::format_message_id(
+                                    "voice.open_asr_leaderboard_average_word_error_rate_wer_l_7d72783a",
+                                    &[("wer", &format!("{wer:.2}"))],
+                                ),
+                            );
+                        }
+                        ui.hyperlink_to(crate::tl_id!("voice.where_to_get_this_model_2647c77d"), choice.page);
+                        note(ui, crate::i18n::format_message_id("voice.download_file_from_that_page_dcbe600f", &[("file", choice.suggested_file)]));
+                    }
+                    ui.add_space(4.0);
+                    let program_label = if whisper {
+                        crate::tl_id!("voice.recognizer_program_whisper_cli_eb53d9da")
+                    } else {
+                        crate::tl_id!("voice.recognizer_program_transcribe_cli_f18f978b")
+                    };
+                    let program = ui.label(egui::RichText::new(program_label).strong()).id;
                     ui.horizontal(|ui| {
-                        changed |= ui.add(egui::TextEdit::singleline(&mut self.voice.executable).desired_width(300.0)).labelled_by(program).changed();
+                        changed |= ui.add(egui::TextEdit::singleline(self.voice.program_mut()).desired_width(300.0)).labelled_by(program).changed();
+                        let title = if whisper {
+                            crate::tl_id!("voice.choose_whisper_cli_db09c1c2")
+                        } else {
+                            crate::tl_id!("voice.choose_transcribe_cli_c12011dc")
+                        };
                         if ui.button(crate::tl_id!("voice.browse_c1b20f52")).clicked()
-                            && let Some(path) = rfd::FileDialog::new().set_title(crate::tl_id!("voice.choose_whisper_cli_db09c1c2")).pick_file()
+                            && let Some(path) = rfd::FileDialog::new().set_title(title).pick_file()
                         {
-                            self.voice.executable = path.to_string_lossy().into_owned();
+                            *self.voice.program_mut() = path.to_string_lossy().into_owned();
                             changed = true;
                         }
-                        ui.label(found(Path::new(&self.voice.executable).is_file()));
+                        ui.label(found(Path::new(self.voice.program()).is_file()));
                     });
-                    let model = ui.label(egui::RichText::new(crate::tl_id!("voice.speech_model_3c5f0bfe")).strong()).id;
+                    let model = ui.label(egui::RichText::new(crate::tl_id!("voice.model_file_a01102b1")).strong()).id;
                     ui.horizontal(|ui| {
-                        changed |= ui.add(egui::TextEdit::singleline(&mut self.voice.model).desired_width(300.0)).labelled_by(model).changed();
+                        changed |= ui.add(egui::TextEdit::singleline(self.voice.model_file_mut()).desired_width(300.0)).labelled_by(model).changed();
                         if ui.button(crate::tl_id!("voice.browse_c1b20f52")).clicked()
                             && let Some(path) = rfd::FileDialog::new().set_title(crate::tl_id!("voice.choose_a_speech_model_f18c2ce5")).pick_file()
                         {
-                            self.voice.model = path.to_string_lossy().into_owned();
+                            *self.voice.model_file_mut() = path.to_string_lossy().into_owned();
                             changed = true;
                         }
-                        ui.label(found(Path::new(&self.voice.model).is_file()));
+                        ui.label(found(Path::new(self.voice.model_file()).is_file()));
                     });
-                    ui.label(
-                        egui::RichText::new(crate::tl_id!("voice.models_whose_name_ends_in_en_understand_english_on_41b266d0"))
-                            .size(11.5)
-                            .color(t.muted),
-                    );
+                    if whisper {
+                        note(ui, crate::tl_id!("voice.models_whose_name_ends_in_en_understand_english_on_41b266d0").into());
+                    }
                     ui.add_space(6.0);
                     egui::Grid::new("dictation-setup-choices").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
                         ui.label(egui::RichText::new(crate::tl_id!("voice.language_89b86ab0")).strong());
@@ -1444,6 +1584,18 @@ impl NoteCraftApp {
                         });
                         ui.end_row();
                     });
+                    if !self.voice.choice.speaks(&self.voice.language) {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(crate::i18n::format_message_id(
+                                    "voice.model_does_not_transcribe_the_chosen_language_choo_ef90b50e",
+                                    &[("model", model_name(self.voice.choice))],
+                                ))
+                                .color(t.warn),
+                            )
+                            .wrap(),
+                        );
+                    }
                     ui.label(
                         egui::RichText::new(crate::i18n::format_message_id(
                             "voice.tap_shortcut_to_start_and_again_to_finish_or_hold_6f592a2d",
@@ -1532,7 +1684,7 @@ impl NoteCraftApp {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use super::{InvocationOrigin, State, VoiceUpdate};
+    use super::{Engine, InvocationOrigin, State, VoiceUi, VoiceUpdate, models};
     use notecraft_store::{Settings, testing::TempDir};
 
     fn app(format: PageFormat) -> (TempDir, NoteCraftApp) {
@@ -1880,10 +2032,12 @@ mod tests {
             }
             assert!(h.state().voice.setup_open, "no recognizer yet: the button opens setup");
             assert_eq!(h.state().session.voice().state(), State::Idle, "and does not start recording");
-            for field in ["Recognizer program (whisper-cli)", "Speech model"] {
+            for field in ["Recognizer program (transcribe-cli)", "Model file"] {
                 let named = h.query_all_by_role_and_label(egui::accesskit::Role::TextInput, field).count();
                 assert_eq!(named, 1, "the {field:?} field is named for screen readers");
             }
+            let _ = h.get_by_label("Speech model");
+            let _ = h.get_by_label("Where to get this model");
             let _ = h.get_by_label("Test microphone");
             review_picture(&mut h, &format!("dictation-setup-{name}"));
         }
@@ -2325,5 +2479,87 @@ mod tests {
         assert!(super::release_finishes(std::time::Duration::from_millis(900)), "letting go after a hold finishes");
         assert_eq!(super::clock(0.4), "0:00");
         assert_eq!(super::clock(75.2), "1:15");
+    }
+
+    #[test]
+    fn a_setup_from_before_the_model_list_keeps_its_whisper_cpp_model() {
+        let t = TempDir::new("voice-settings");
+        let settings = Settings::at(t.path().join("settings.toml"));
+        settings.set("voice_executable", "/opt/whisper.cpp/whisper-cli").expect("program");
+        settings.set("voice_model", "/models/ggml-base.en.bin").expect("model");
+        let voice = VoiceUi::new(&settings);
+        assert_eq!(voice.choice.id, models::WHISPER_CPP);
+        assert_eq!(voice.program(), "/opt/whisper.cpp/whisper-cli");
+        assert_eq!(voice.model_file(), "/models/ggml-base.en.bin");
+    }
+
+    #[test]
+    fn a_new_setup_offers_the_default_model_run_by_transcribe_cpp() {
+        let t = TempDir::new("voice-settings");
+        let voice = VoiceUi::new(&Settings::at(t.path().join("settings.toml")));
+        assert_eq!(voice.choice.id, models::DEFAULT_MODEL);
+        assert_eq!(voice.choice.engine, Engine::TranscribeCpp);
+        assert_eq!((voice.program(), voice.model_file()), ("", ""));
+    }
+
+    #[test]
+    fn the_chosen_model_its_file_and_each_program_are_read_back_after_a_restart() {
+        let (_t, mut app) = app(PageFormat::Cmgfm);
+        app.voice.executable = "/opt/whisper.cpp/whisper-cli".into();
+        app.voice.choice = models::model("cohere-transcribe-03-2026").expect("Cohere Transcribe");
+        *app.voice.program_mut() = "/opt/transcribe.cpp/transcribe-cli".into();
+        *app.voice.model_file_mut() = "/models/cohere-transcribe-03-2026-Q4_K_M.gguf".into();
+        app.save_voice_settings();
+        assert_eq!(app.voice.error, None);
+        let mut again = VoiceUi::new(&app.session.settings);
+        assert_eq!(again.choice.id, "cohere-transcribe-03-2026");
+        assert_eq!(again.program(), "/opt/transcribe.cpp/transcribe-cli");
+        assert_eq!(again.model_file(), "/models/cohere-transcribe-03-2026-Q4_K_M.gguf");
+        // Each model keeps its own file, and each program its own path.
+        again.choice = models::model(models::WHISPER_CPP).expect("whisper.cpp");
+        assert_eq!((again.program(), again.model_file()), ("/opt/whisper.cpp/whisper-cli", ""));
+    }
+
+    #[test]
+    fn a_model_is_ready_only_for_languages_it_transcribes() {
+        let (t, mut app) = app(PageFormat::Cmgfm);
+        let program = t.path().join("transcribe-cli");
+        let model = t.path().join("parakeet-tdt-0.6b-v2-Q4_K_M.gguf");
+        std::fs::write(&program, b"").expect("program");
+        std::fs::write(&model, b"GGUF").expect("model");
+        app.voice.choice = models::model("parakeet-tdt-0.6b-v2").expect("English-only Parakeet");
+        *app.voice.program_mut() = program.to_string_lossy().into_owned();
+        *app.voice.model_file_mut() = model.to_string_lossy().into_owned();
+        for (language, ready) in [("en", true), ("auto", true), ("es", false)] {
+            app.voice.language = language.into();
+            assert_eq!(app.dictation_ready(), ready, "{language}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_recognizer_check_runs_the_chosen_models_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let (t, mut app) = app(PageFormat::Cmgfm);
+        let program = t.path().join("transcribe-cli");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nif [ \"$1\" = --help ]; then echo '-m -o -q -l'; exit 0; fi\n\
+             while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then : > \"$2\"; fi; shift; done\n",
+        )
+        .expect("stand-in transcribe-cli");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("executable");
+        let model = t.path().join("model.gguf");
+        std::fs::write(&model, b"GGUF").expect("model");
+        app.voice.choice = models::model(models::DEFAULT_MODEL).expect("default model");
+        *app.voice.program_mut() = program.to_string_lossy().into_owned();
+        *app.voice.model_file_mut() = model.to_string_lossy().into_owned();
+        app.start_recognizer_test();
+        let started = Instant::now();
+        while app.voice.recognizer_result.is_none() && started.elapsed() < Duration::from_secs(10) {
+            app.poll_setup_checks();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(matches!(app.voice.recognizer_result, Some(Ok(_))), "{:?}", app.voice.recognizer_result);
     }
 }

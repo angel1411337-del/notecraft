@@ -915,3 +915,15 @@
 @id	voice.layout_would_shift	$$$This insertion would move paragraph or table layout. Insert one line, or click below the page to append the words.@@@
 @id	voice.target_changed_review_required	$$$The page or cursor changed. Review the words and choose Insert to use the current position.@@@
 @id	voice.multiline_needs_line_end	$$$Multiple lines need the cursor at the end of a paragraph. Move there, or click below the page to append the words.@@@
+@id	voice.dictation_runs_on_this_computer_with_transcribe_cp_92d97a34	$$$Dictation runs on this computer with transcribe.cpp. Choose its transcribe-cli program and the model file you have downloaded. NoteCraft never downloads them and never sends audio anywhere.@@@
+@id	voice.model_file_a01102b1	$$$Model file@@@
+@id	voice.recognizer_program_transcribe_cli_f18f978b	$$$Recognizer program (transcribe-cli)@@@
+@id	voice.choose_transcribe_cli_c12011dc	$$$Choose transcribe-cli@@@
+@id	voice.where_to_get_transcribe_cli_fe6efb55	$$$Where to get transcribe-cli@@@
+@id	voice.where_to_get_this_model_2647c77d	$$$Where to get this model@@@
+@id	voice.download_file_from_that_page_dcbe600f	$$$Download {file} from that page.@@@
+@id	voice.by_maker_about_size_to_download_license_ad1bbd28	$$$By {maker} · about {size} to download · {license}@@@
+@id	voice.languages_count_c6a88eeb	$$$Languages: {count}@@@
+@id	voice.open_asr_leaderboard_average_word_error_rate_wer_l_7d72783a	$$$Open ASR Leaderboard average word error rate: {wer}% (lower is better)@@@
+@id	voice.model_does_not_transcribe_the_chosen_language_choo_ef90b50e	$$${model} does not transcribe the chosen language. Choose another language or model.@@@
+@id	voice.your_own_whisper_cpp_model_a7206edd	$$$Your own whisper.cpp model@@@

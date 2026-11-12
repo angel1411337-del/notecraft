@@ -51,8 +51,9 @@
 ## A tour
 
 Optional local dictation is available with `cargo build -p notecraft --features voice`.
-Use your own whisper-cli/model, review the transcript, then Insert with normal Undo
-and autosave. See [dictation setup and limits](docs/how-to/dictate.md).
+Choose a ranked local speech model (Parakeet, Canary, Granite, Cohere, Qwen3-ASR, Whisper
+and more) run by your own transcribe-cli or whisper-cli, review the transcript, then
+Insert with normal Undo and autosave. See [dictation setup and limits](docs/how-to/dictate.md).
 The feature is disabled by default. Hardware/model and Windows/macOS voice acceptance
 remain unverified.
 

@@ -2,6 +2,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Host-independent voice sessions. No UI, I/O, provider, or notebook dependency.
 
+pub mod models;
+
 use std::fmt;
 
 pub const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;

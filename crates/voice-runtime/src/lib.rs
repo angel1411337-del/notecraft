@@ -7,6 +7,7 @@ pub mod audio;
 mod capture;
 mod runtime;
 mod temporary;
+pub mod transcribe;
 pub mod whisper;
 
 use std::sync::{
@@ -15,6 +16,7 @@ use std::sync::{
 };
 
 pub use runtime::{Runtime, RuntimeEvent, microphone_devices};
+pub use transcribe::TranscribeConfig;
 pub use whisper::WhisperConfig;
 
 /// A process/provider can observe cancellation without blocking its owner.
@@ -43,8 +45,8 @@ impl Cancellation {
 ///
 /// Operations must observe cancellation promptly and bound blocking I/O and output. Runtime
 /// drops join workers to release capture and process files. A provider that ignores
-/// cancellation can block its owner on drop. The bundled Whisper provider polls cancellation
-/// every 10 ms and enforces a timeout.
+/// cancellation can block its owner on drop. The bundled whisper.cpp and transcribe.cpp
+/// providers poll cancellation every 10 ms and enforce a timeout.
 pub trait Transcriber: Send + 'static {
     fn capabilities(&self) -> craft_voice_core::Capabilities;
     fn prepare(&mut self, cancel: &Cancellation) -> Result<(), String>;

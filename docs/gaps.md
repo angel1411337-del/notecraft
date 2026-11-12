@@ -6,7 +6,8 @@ it is fixed and tested, not when it is promised.
 ## Product
 
 - **Optional dictation needs real speech and device acceptance.** The `voice` build
-  supports reviewed text insertion through a local whisper-cli/model.
+  supports reviewed text insertion through a local transcribe-cli or whisper-cli and a
+  model chosen from a ranked list.
   Real recognition, device permissions/disconnects, and Windows/macOS voice paths
   remain unverified. Inline code/math targets, tables, source view, and cross-block
   selections are unsupported. Model language capability and transcript language

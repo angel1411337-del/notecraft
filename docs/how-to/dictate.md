@@ -7,18 +7,61 @@ cargo build -p notecraft --features voice
 ```
 
 Choose **Dictate** (the microphone beside the ribbon tabs) or press **F8**. The first
-time, **Dictation setup** opens: choose a local `whisper.cpp` `whisper-cli` executable
-and a model, then use **Test microphone** and **Test recognizer** to check both halves.
-The executable and model must already exist on your computer. NoteCraft does not
-download them, contact a hosted provider, or require an account. Setup stays
+time, **Dictation setup** opens: choose a **Speech model** from the list, the program
+that runs it (`transcribe-cli` from transcribe.cpp, or `whisper-cli` from whisper.cpp)
+and the model file, then use **Test microphone** and **Test recognizer** to check both
+halves. The program and model file must already exist on your computer. NoteCraft does
+not download them, contact a hosted provider, or require an account. Setup stays
 available from the `...` button beside **Dictate** and from **File > Options**.
 Linux builds need the CPAL/ALSA development dependencies. On macOS,
 `bash packaging/OSX/package.sh --voice` builds an optional voice-enabled app bundle
 with the microphone usage description and hardened runtime audio-input entitlement.
 
 Choose the language in setup: **Detect automatically**, English, Spanish, and others.
-Use a multilingual model for Spanish and other languages; models whose name ends in
-`.en` understand English only. This adapter does not inspect the model's languages.
+Setup shows how many languages the chosen model transcribes, and warns (and does not
+start) when it does not list the chosen language. For **Your own whisper.cpp model**,
+NoteCraft cannot tell: models whose name ends in `.en` understand English only.
+
+## Choose a speech model
+
+The list is ranked by the average word error rate (WER, lower is better) on the Hugging
+Face [Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard),
+down to Whisper large-v3, keeping only models a local program can run on a laptop. All of
+them run in [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)'s
+`transcribe-cli` from a GGUF file. Setup links each model's page and names the file to
+download (the Q4_K_M build). Any GGUF file you choose will run; the list only guides.
+
+| Model | WER | Download | Languages | License |
+| --- | --- | --- | --- | --- |
+| Granite Speech 4.1 2B (IBM) | 5.33% | 1.6 GB | 6 | Apache-2.0 |
+| Cohere Transcribe (Cohere) | 5.42% | 1.6 GB | 14 | Apache-2.0 |
+| Granite 4.0 1B Speech (IBM) | 5.52% | 1.6 GB | 6 | Apache-2.0 |
+| Canary-Qwen 2.5B (NVIDIA) | 5.63% | 1.7 GB | 1 | CC-BY-4.0 |
+| Qwen3-ASR 1.7B (Alibaba) | 5.76% | 1.3 GB | 30 | Apache-2.0 |
+| Parakeet Unified 0.6B (NVIDIA) | 5.91% | 480 MB | 1 | NVIDIA Open Model License |
+| Parakeet TDT 0.6B v2 (NVIDIA) | 6.05% | 480 MB | 1 | CC-BY-4.0 |
+| Parakeet TDT 0.6B v3 (NVIDIA), the default | 6.34% | 490 MB | 25 | CC-BY-4.0 |
+| Canary 1B (NVIDIA) | 6.50% | 730 MB | 4 | CC-BY-NC-4.0 (non-commercial) |
+| Nemotron Speech Streaming 0.6B (NVIDIA) | 6.93% | 480 MB | 1 | NVIDIA Open Model License |
+| Parakeet TDT 1.1B (NVIDIA) | 7.02% | 830 MB | 1 | CC-BY-4.0 |
+| Voxtral Mini 3B (Mistral AI) | 7.05% | 3.0 GB | 8 | Apache-2.0 |
+| Whisper large-v3 (OpenAI) | 7.44% | 1.0 GB | 100 | Apache-2.0 |
+| Whisper large-v3 turbo (OpenAI) | 7.83% | 540 MB | 100 | MIT |
+| Whisper small, Whisper base (OpenAI) | not ranked | 170 MB, 60 MB | 99 | Apache-2.0 |
+| Your own whisper.cpp model | - | - | - | - |
+
+Left out: Granite Speech 3.3 8B and Phi-4 Multimodal (no local program runs them) and
+Voxtral Small 24B (too large for a laptop). The default, Parakeet TDT 0.6B v3, is small and fast on a laptop processor and is the most
+accurate of those that speak more than English (25 languages).
+**Your own whisper.cpp model** keeps the first setup: a `whisper-cli` and a ggml model.
+
+Sources, as of November 2026: WER from the leaderboard as reported by
+[Codesota](https://codesota.com/speech/stt-leaderboard) (May 2026 snapshot) and, for
+Parakeet Unified, Parakeet TDT v3 and Nemotron, by
+[OpenWhispr](https://openwhispr.com/blog/parakeet-vs-whisper-vs-nemotron) (July 2026).
+Sizes, languages and licenses from the transcribe.cpp model catalog. Leaderboard audio is
+fairly clean; results on your voice and microphone differ. Rankings change; the list is
+data in `crates/voice-core/src/models.rs`.
 
 1. Click where the words should go. With no cursor (on a new page, say), or with the
    cursor in a table, code or an equation, the words become a new paragraph at the end
@@ -61,7 +104,7 @@ settings** opens the system's microphone privacy page (Windows and macOS), and
 **Dictation setup** opens setup.
 
 Audio and transcripts are session-only until you choose Insert. The process
-adapter temporarily writes WAV and JSON files in a private `voice-cache` folder
+adapters temporarily write WAV and transcript files in a private `voice-cache` folder
 beside local settings, outside notebooks. It deletes job files on completion,
 cancellation and failure. A later job cleans abandoned inactive files after an
 interrupted process. Cleanup is best effort and is not secure erasure. Do not
@@ -77,9 +120,12 @@ error.
 The microphone opens as soon as you press the talk key. The recognizer's `--help`
 check runs alongside it, once per executable while the app is open, so the first
 words are not lost. On Windows the recognizer runs without a console window.
-When the recognizer advertises `-sns`, non-speech tokens are suppressed, and
+When whisper-cli advertises `-sns`, non-speech tokens are suppressed, and
 known silence labels such as `[BLANK_AUDIO]` or `(music)` are dropped; other words
-in brackets are kept for review.
+in brackets are kept for review. transcribe-cli runs with `-q -m MODEL -o FILE` and
+`-l LANGUAGE` unless the language is automatic; NoteCraft reads only the transcript
+file, drops lines that are only a silence label, and checks that the model file is GGUF
+before recording.
 
 The panel shows RECORDING only once the microphone delivers audio, with an input
 level meter. If the device sends nothing for five seconds, including a stream that stalls after
@@ -114,8 +160,17 @@ Real microphone/model acceptance and Windows/macOS device testing remain require
 
 ## Manual native acceptance
 
-On Linux, Windows and macOS, test a real microphone and a real local whisper-cli/model.
-Record the OS, device, recognizer version, model and language with the result.
+On Linux, Windows and macOS, test a real microphone with a real local transcribe-cli and
+GGUF model, and with a whisper-cli and ggml model. Record the OS, device, recognizer
+version, model and language with the result.
+
+0. Before the app, run a model on a recording with the runtime example. The program's
+   file name picks the adapter (`transcribe-cli` or `whisper-cli`):
+
+   ```sh
+   cargo run -p craft-voice-runtime --example transcribe -- /path/to/transcribe-cli /path/to/parakeet-tdt-0.6b-v3-Q4_K_M.gguf /path/to/recording.wav /path/to/private-voice-jobs
+   ```
+
 
 1. Test microphone in setup. Speak, mute it and select another device. Check the live
    meter, silence warning, disconnect error and retry after reconnecting.

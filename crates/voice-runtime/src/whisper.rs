@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 const MAX_OUTPUT: usize = 1024 * 1024;
 /// whisper.cpp skips input shorter than one second; a short press is padded with silence.
-const MIN_SAMPLES: usize = crate::audio::SAMPLE_RATE * 11 / 10;
+pub(crate) const MIN_SAMPLES: usize = crate::audio::SAMPLE_RATE * 11 / 10;
 
 /// An executable that passed the `--help` check, by path, size and modification time, and
 /// whether it can suppress non-speech tokens. Checked once per executable, not per recording,
@@ -29,13 +29,13 @@ fn identity(path: &Path) -> Option<(u64, Option<SystemTime>)> {
 #[path = "whisper.win.rs"]
 mod platform;
 #[cfg(windows)]
-use platform::suppress_console;
+pub(crate) use platform::suppress_console;
 
 #[cfg(not(windows))]
-fn suppress_console(_command: &mut Command) {}
+pub(crate) fn suppress_console(_command: &mut Command) {}
 
 /// The option names a `--help` text advertises, as whole words (`-f` is not found inside `-of`).
-fn advertised(help: &str) -> std::collections::HashSet<&str> {
+pub(crate) fn advertised(help: &str) -> std::collections::HashSet<&str> {
     help.split(|c: char| c.is_whitespace() || c == ',' || c == '[' || c == ']').filter(|w| w.starts_with('-')).collect()
 }
 
@@ -176,7 +176,7 @@ pub fn wait_child(child: &mut Child, cancel: &Cancellation, timeout: Duration) -
     }
 }
 
-fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     let file = File::open(path).map_err(|e| format!("cannot read recognizer result: {e}"))?;
     let mut bytes = Vec::new();
     file.take((MAX_OUTPUT + 1) as u64).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -212,7 +212,7 @@ pub fn parse_transcript(bytes: &[u8]) -> Result<String, String> {
 /// whisper.cpp labels silence and noise as whole segments such as `[BLANK_AUDIO]` or `(music)`.
 /// Only those known labels are dropped: a spoken aside such as `(double-check the date)` is the
 /// person's words and goes to review like the rest.
-fn non_speech(segment: &str) -> bool {
+pub(crate) fn non_speech(segment: &str) -> bool {
     let t = segment.trim();
     if t.is_empty() {
         return true;

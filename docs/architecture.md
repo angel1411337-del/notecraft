@@ -177,10 +177,11 @@ project was designed against is kept out of this repository.
 ## Optional reusable voice libraries
 
 `craft-voice-core` (layer 1) owns pure session transitions, full-replacement
-transcript revisions, bounds and provider capabilities. It has no dependencies.
+transcript revisions, bounds, provider capabilities and the ranked list of speech models
+dictation offers (data only). It has no dependencies.
 `craft-voice-runtime` (layer 3) owns bounded audio conversion, optional CPAL capture,
-background decoding, private job files and the local whisper-cli adapter. Neither
-library depends on NoteCraft or egui. Its `transcribe` example is a second consumer.
+background decoding, private job files and the local whisper-cli and transcribe-cli
+adapters. Neither library depends on NoteCraft or egui. Its `transcribe` example is a second consumer.
 
 The engine owns pure voice state and emits typed effects. Voice commands require a
 code-only LocalUi origin, except metadata-only status. CLI and MCP parameters cannot
